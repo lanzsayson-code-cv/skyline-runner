@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Skyline Runner</title>
+<style>
+  :root {
+    --sky-top: #cfe8f0;
+    --sky-bottom: #f4ede0;
+    --ink: #24303a;
+    --line: #24303a;
+    --accent: #d3572e;
+    --paper: #f4ede0;
+    --muted: #6b7680;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--paper);
+    overscroll-behavior: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    font-family: 'Courier New', ui-monospace, Menlo, Consolas, monospace;
+    color: var(--ink);
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    touch-action: manipulation;
+    padding: 16px;
+  }
+
+  .wrap {
+    width: 100%;
+    max-width: 640px;
+  }
+
+  .titlebar {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 8px;
+    padding: 0 2px;
+  }
+
+  h1 {
+    font-size: 15px;
+    letter-spacing: 0.5px;
+    margin: 0;
+    font-weight: 700;
+    text-transform: none;
+  }
+
+  .score {
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .score b { color: var(--ink); }
+
+  .stage {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 8;
+    background: linear-gradient(180deg, var(--sky-top) 0%, var(--sky-bottom) 100%);
+    border: 2px solid var(--ink);
+    overflow: hidden;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: rgba(244, 237, 224, 0.88);
+    text-align: center;
+    padding: 20px;
+  }
+
+  .overlay.hidden { display: none; }
+
+  .overlay p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.5;
+    max-width: 340px;
+  }
+
+  .overlay .big {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--ink);
+  }
+
+  button {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--paper);
+    background: var(--ink);
+    border: none;
+    padding: 10px 22px;
+    cursor: pointer;
+    letter-spacing: 0.3px;
+  }
+
+  button:active { background: var(--accent); }
+
+  .foot {
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    padding: 0 2px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="titlebar">
+    <h1>Skyline Runner</h1>
+    <div class="score">HI <b id="hiScore">0</b>&nbsp;&nbsp;<b id="score">0</b></div>
+  </div>
+
+  <div class="stage">
+    <canvas id="game"></canvas>
+    <div class="overlay" id="overlay">
+      <div class="big">Skyline Runner</div>
+      <p>Fly the plane over the buildings. Tap, click, or press Space to flap up.</p>
+      <button id="startBtn">Start</button>
+    </div>
+    <div class="overlay hidden" id="countdown">
+      <div class="big" id="countdownNum" style="font-size:48px;">3</div>
+    </div>
+  </div>
+
+  <div class="foot">Space / Tap / Click — flap up. Gravity does the rest.</div>
+</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+  const countdownEl = document.getElementById('countdown');
+  const countdownNum = document.getElementById('countdownNum');
+  const startBtn = document.getElementById('startBtn');
+  const scoreEl = document.getElementById('score');
+  const hiScoreEl = document.getElementById('hiScore');
+
+  const LOGICAL_W = 800;
+  const LOGICAL_H = 400;
+  const GROUND_Y = LOGICAL_H - 40;
+
+  function resize() {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = LOGICAL_W * dpr;
+    canvas.height = LOGICAL_H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  let hiScore = 0;
+  try {
+    hiScore = parseInt(localStorage.getItem('skylineHi') || '0', 10) || 0;
+  } catch (e) { hiScore = 0; }
+  hiScoreEl.textContent = hiScore;
+
+  const plane = {
+    x: 90,
+    y: GROUND_Y - 180,
+    w: 54,
+    h: 26,
+    vy: 0,
+    flapStrength: -3.8,
+    gravity: 0.26,
+    maxDown: 35
+  };
+
+  let obstacles = [];
+  let clouds = [];
+  let speed = 4.8;
+  let baseSpeed = 4.8;
+  let frame = 0;
+  let score = 0;
+  let running = false;
+  let gameOver = false;
+  let spawnTimer = 0;
+
+  function resetGame() {
+    plane.y = GROUND_Y - 180;
+    plane.vy = 0;
+    obstacles = [];
+    clouds = [];
+    speed = baseSpeed;
+    frame = 0;
+    score = 0;
+    spawnTimer = 90;
+    gameOver = false;
+    for (let i = 0; i < 4; i++) {
+      clouds.push({ x: Math.random() * LOGICAL_W, y: 30 + Math.random() * 90, s: 0.6 + Math.random() * 0.8 });
+    }
+  }
+
+  function buildingPair(x) {
+    // pair = top building + bottom building with a gap the plane threads through
+    const gapH = 120 - Math.min(40, score / 12);
+    const gapCenter = 90 + Math.random() * (GROUND_Y - 180);
+    const topH = Math.max(20, gapCenter - gapH / 2);
+    const bottomH = Math.max(20, GROUND_Y - (gapCenter + gapH / 2));
+    return {
+      x: x,
+      w: 46,
+      topH: topH,
+      bottomH: bottomH,
+      passed: false
+    };
+  }
+
+  function spawnObstacle() {
+    obstacles.push(buildingPair(LOGICAL_W + 20));
+  }
+
+  function drawBuilding(x, y, w, h, windowsSeed) {
+    ctx.fillStyle = '#24303a';
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = '#f4ede0';
+    const winW = 5, winH = 6, gap = 5;
+    let wy = y + gap;
+    let seed = windowsSeed;
+    while (wy < y + h - gap) {
+      let wx = x + gap;
+      while (wx < x + w - gap) {
+        seed = (seed * 9301 + 49297) % 233280;
+        const lit = (seed / 233280) > 0.35;
+        if (lit) ctx.fillRect(wx, wy, winW, winH);
+        wx += winW + gap;
+      }
+      wy += winH + gap;
+    }
+  }
+
+  function drawPlane(x, y, w, h, tilt) {
+    ctx.save();
+    ctx.translate(x + w / 2, y + h / 2);
+    ctx.rotate(tilt);
+    ctx.translate(-(w / 2), -(h / 2));
+    ctx.fillStyle = '#24303a';
+    // fuselage
+    ctx.beginPath();
+    ctx.moveTo(0, h * 0.5);
+    ctx.lineTo(w * 0.75, h * 0.15);
+    ctx.lineTo(w, h * 0.4);
+    ctx.lineTo(w * 0.78, h * 0.55);
+    ctx.lineTo(w * 0.7, h * 0.95);
+    ctx.lineTo(w * 0.5, h * 0.7);
+    ctx.lineTo(w * 0.15, h * 0.75);
+    ctx.closePath();
+    ctx.fill();
+    // tail wing
+    ctx.beginPath();
+    ctx.moveTo(w * 0.08, h * 0.55);
+    ctx.lineTo(w * 0.02, h * 0.1);
+    ctx.lineTo(w * 0.32, h * 0.42);
+    ctx.closePath();
+    ctx.fill();
+    // top wing
+    ctx.beginPath();
+    ctx.moveTo(w * 0.38, h * 0.35);
+    ctx.lineTo(w * 0.5, h * -0.15);
+    ctx.lineTo(w * 0.62, h * 0.3);
+    ctx.closePath();
+    ctx.fill();
+    // window
+    ctx.fillStyle = '#f4ede0';
+    ctx.beginPath();
+    ctx.arc(w * 0.62, h * 0.35, h * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawCloud(x, y, s) {
+    ctx.fillStyle = 'rgba(36,48,58,0.18)';
+    ctx.beginPath();
+    ctx.ellipse(x, y, 18 * s, 8 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(x + 14 * s, y + 3 * s, 12 * s, 7 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(x - 14 * s, y + 3 * s, 12 * s, 7 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+  }
+
+  function update() {
+    frame++;
+
+    // plane physics - constant gravity, flaps apply an upward impulse (see flap())
+    plane.vy += plane.gravity;
+    plane.vy = Math.min(plane.maxDown, plane.vy);
+    plane.y += plane.vy;
+
+    if (plane.y < 10) { plane.y = 10; plane.vy = 0; }
+    if (plane.y + plane.h > GROUND_Y) {
+      plane.y = GROUND_Y - plane.h;
+      plane.vy = 0;
+      endGame();
+      return;
+    }
+
+    // clouds
+    clouds.forEach(c => {
+      c.x -= speed * 0.25 * c.s;
+      if (c.x < -40) c.x = LOGICAL_W + 40;
+    });
+
+    // obstacles
+    spawnTimer -= 1;
+    if (spawnTimer <= 0) {
+      spawnObstacle();
+      spawnTimer = 90 - Math.min(40, speed * 5) + Math.random() * 25;
+    }
+
+    obstacles.forEach(o => { o.x -= speed; });
+    obstacles = obstacles.filter(o => o.x + o.w > -10);
+
+    obstacles.forEach(o => {
+      if (!o.passed && o.x + o.w < plane.x) {
+        o.passed = true;
+        score += 10;
+      }
+      const topRect = { x: o.x, y: 0, w: o.w, h: o.topH };
+      const bottomRect = { x: o.x, y: GROUND_Y - o.bottomH, w: o.w, h: o.bottomH };
+      const pRect = { x: plane.x + 6, y: plane.y + 4, w: plane.w - 14, h: plane.h - 10 };
+
+      if (rectsOverlap(pRect.x, pRect.y, pRect.w, pRect.h, topRect.x, topRect.y, topRect.w, topRect.h) ||
+          rectsOverlap(pRect.x, pRect.y, pRect.w, pRect.h, bottomRect.x, bottomRect.y, bottomRect.w, bottomRect.h)) {
+        endGame();
+      }
+    });
+
+    speed = baseSpeed + Math.min(4, score / 180);
+
+    scoreEl.textContent = Math.floor(score);
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, LOGICAL_W, LOGICAL_H);
+
+    // sky gradient
+    const g = ctx.createLinearGradient(0, 0, 0, LOGICAL_H);
+    g.addColorStop(0, '#cfe8f0');
+    g.addColorStop(1, '#f4ede0');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, LOGICAL_W, LOGICAL_H);
+
+    clouds.forEach(c => drawCloud(c.x, c.y, c.s));
+
+    // ground line
+    ctx.strokeStyle = '#24303a';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, GROUND_Y);
+    ctx.lineTo(LOGICAL_W, GROUND_Y);
+    ctx.stroke();
+
+    ctx.fillStyle = '#e4d9c4';
+    ctx.fillRect(0, GROUND_Y, LOGICAL_W, LOGICAL_H - GROUND_Y);
+
+    obstacles.forEach((o, i) => {
+      if (o.topH > 0) drawBuilding(o.x, 0, o.w, o.topH, i * 17 + 3);
+      if (o.bottomH > 0) drawBuilding(o.x, GROUND_Y - o.bottomH, o.w, o.bottomH, i * 31 + 11);
+    });
+
+    const tilt = Math.max(-0.3, Math.min(0.4, plane.vy * 0.05));
+    drawPlane(plane.x, plane.y, plane.w, plane.h, tilt);
+  }
+
+  const STEP = 1000 / 60; // physics tuned for a 60fps-equivalent step
+  let lastTime = 0;
+  let accumulator = 0;
+
+  function loop(now) {
+    if (!running) return;
+    if (!lastTime) lastTime = now;
+    let delta = now - lastTime;
+    lastTime = now;
+    if (delta > 250) delta = 250; // guard against big pauses (tab switch, etc.)
+    accumulator += delta;
+
+    while (accumulator >= STEP) {
+      update();
+      accumulator -= STEP;
+    }
+    render();
+    if (running) requestAnimationFrame(loop);
+  }
+
+  function beginCountdown() {
+    overlay.classList.add('hidden');
+    resetGame();
+    render();
+    countdownEl.classList.remove('hidden');
+    let n = 3;
+    countdownNum.textContent = n;
+    const tick = setInterval(() => {
+      n -= 1;
+      if (n > 0) {
+        countdownNum.textContent = n;
+      } else {
+        clearInterval(tick);
+        countdownEl.classList.add('hidden');
+        startGame();
+      }
+    }, 1000);
+  }
+
+  function startGame() {
+    running = true;
+    lastTime = 0;
+    accumulator = 0;
+    requestAnimationFrame(loop);
+  }
+
+  function endGame() {
+    if (gameOver) return;
+    gameOver = true;
+    running = false;
+    if (score > hiScore) {
+      hiScore = Math.floor(score);
+      hiScoreEl.textContent = hiScore;
+      try { localStorage.setItem('skylineHi', String(hiScore)); } catch (e) {}
+    }
+    render();
+    overlay.classList.remove('hidden');
+    overlay.innerHTML =
+      '<div class="big">Crashed — score ' + Math.floor(score) + '</div>' +
+      '<p>Tap, click, or press Space to flap over the buildings.</p>' +
+      '<button id="startBtn">Try again</button>';
+    document.getElementById('startBtn').addEventListener('click', beginCountdown);
+  }
+
+  function flap() {
+    if (running) plane.vy = plane.flapStrength;
+  }
+
+  startBtn.addEventListener('click', beginCountdown);
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (e.repeat) return;
+      if (!running && !gameOver) return;
+      if (!running && gameOver) { beginCountdown(); return; }
+      flap();
+    }
+  });
+
+  canvas.addEventListener('mousedown', () => flap());
+
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    flap();
+  }, { passive: false });
+
+  // initial static render
+  resetGame();
+  render();
+})();
+</script>
+</body>
+</html>
